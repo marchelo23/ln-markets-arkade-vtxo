@@ -96,6 +96,11 @@ export class BitcoinRpcProvider implements OnchainProvider {
     }
 
     const data = (await response.json()) as RpcResult<T>;
+    
+    // Strict Schema Validation
+    if (typeof data !== "object" || data === null) {
+      throw new BitcoinRpcError("Invalid JSON-RPC response format", -32603);
+    }
 
     if (data.error) {
       throw new BitcoinRpcError(data.error.message, data.error.code);
@@ -103,6 +108,19 @@ export class BitcoinRpcProvider implements OnchainProvider {
 
     if (data.result === null) {
       throw new BitcoinRpcError(`Method ${method} returned null`, -1);
+    }
+
+    // Sanitize common outputs: raw hex or objects with txid/hash fields
+    const res = data.result as any;
+    if (res && typeof res === "object") {
+       if (res.txid && !/^[0-9a-fA-F]{64}$/.test(res.txid)) {
+         throw new BitcoinRpcError(`Oracle Poisoning Detected: Invalid TXID format in RPC response: ${res.txid}`, -32603);
+       }
+    } else if (typeof res === "string") {
+       // If the result is a txid, it must be hex
+       if (method === "sendrawtransaction" && !/^[0-9a-fA-F]{64}$/.test(res)) {
+         throw new BitcoinRpcError("Invalid TXID format in broadcast response", -32603);
+       }
     }
 
     return data.result;

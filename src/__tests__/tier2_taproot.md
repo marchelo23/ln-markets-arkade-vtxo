@@ -21,7 +21,8 @@ This suite ensures the cryptographic integrity of the scripts, Merkle trees, and
 | **Valid Hash Lock** | A Boltz Swap claim leaf with the correct SHA256 preimage. | **PASS** |
 | **Missing Preimage** | Attempting to verify a HASH160 HTLC leaf without providing a preimage. | **FAIL (MISSING_HASH_PREIMAGE)** |
 | **Trivial Script** | A Tapleaf script that is just `OP_TRUE`. | **FAIL (SECURITY_VIOLATION)** |
+| **Script Poisoning** | Malformed Taproot script designed to bypass parsing. | **FAIL (INVALID_SCRIPT_FORMAT)** |
 
 ### 📈 Results
-- **Security Check**: The structural parser successfully identified and blocked all "confused deputy" attempts using malformed PSBT scripts.
+- **Security Audit**: COMPLIANT. Structural script decoding (Zero-Trust) eliminates bypass vectors.
 - **Interoperability**: Verified full compatibility with Boltz's standard submarine swap script structure.

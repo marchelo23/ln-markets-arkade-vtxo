@@ -328,7 +328,17 @@ export async function reconstructAndValidateVtxoDAG(
     const rawPsbt = rawPsbts.get(link.txid);
     if (!rawPsbt) throw Errors.MISSING_TX(link.txid);
 
-    const tx = Transaction.fromPSBT(base64.decode(rawPsbt), { allowUnknownOutputs: true });
+    let tx: Transaction;
+    try {
+      tx = Transaction.fromPSBT(base64.decode(rawPsbt), { allowUnknownOutputs: true });
+    } catch (e: any) {
+      throw new VtxoVerificationError(
+        `Failed to parse PSBT for ${link.txid}: ${e.message}`,
+        "INVALID_PSBT",
+        { txid: link.txid, originalError: e.message }
+      );
+    }
+
     if (tx.id !== link.txid) throw Errors.TXID_MISMATCH(link.txid, tx.id);
     txMap.set(link.txid, { tx, rawPsbt, chainTx: link });
   }

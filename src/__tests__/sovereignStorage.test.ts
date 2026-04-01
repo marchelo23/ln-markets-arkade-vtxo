@@ -35,15 +35,23 @@ class MockStorageProvider implements StorageProvider {
   }
 }
 
+import { setStorageMasterKey } from "../sovereignStorage.js";
+import { MockWalletAuthenticator } from "../authenticator.js";
+
 describe("Tier 3: Sovereign Unilateral Exit Storage", () => {
   let indexer: MockIndexerProvider;
   let onchain: MockOnchainProvider;
   let storage: MockStorageProvider;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     indexer = new MockIndexerProvider();
     onchain = new MockOnchainProvider();
     storage = new MockStorageProvider();
+    
+    // 🛡️ Security Protocol: Derive master key via PBKDF2 and inject into context
+    const salt = Buffer.alloc(32, 0x55); // Stable salt for testing
+    const masterKey = MockWalletAuthenticator.deriveMasterKey("test-password-123", salt);
+    setStorageMasterKey(masterKey);
   });
 
   it("should successfully extract and store an exit sequence from a valid DAG", async () => {

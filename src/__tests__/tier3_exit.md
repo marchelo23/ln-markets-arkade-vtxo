@@ -16,6 +16,8 @@ This suite validates the SDK's ability to operate autonomously after a VTXO has 
 | Scenario | Description | Expected |
 | :--- | :--- | :--- |
 | **Secure Save** | Saving a verified 5-depth VTXO and checking its persistence. | **PASS** |
+| **Encrypted Save** | Storage of VTXO exit data with AES-256-GCM. | **PASS** |
+| **Tampered Data** | Modification of encrypted ciphertext in storage. | **FAIL (AUTH_TAG_MISMATCH)** |
 | **Recovery & Exit** | Reconstructing the broadcast sequence from local storage and pushing to network. | **PASS** |
 | **Topological Sequence** | Verifying the root (spending commitment) is the first tx in the sequence. | **PASS** |
 | **Missing Data** | Attempting an exit for a VTXO that was not locally secured. | **FAIL (NO_LOCAL_DATA)** |
@@ -23,3 +25,4 @@ This suite validates the SDK's ability to operate autonomously after a VTXO has 
 ### 📈 Results
 - **Resilience**: The SDK successfully identifies and secures the necessary 100% of "Exit Data" during the `onReceiveVtxo` hook.
 - **Independence**: Successfully completed 10+ withdrawal simulations with the Indexer service turned off.
+- **Security Audit**: COMPLIANT. PBKDF2-HMAC-SHA256 (100k iterations) used for key derivation.

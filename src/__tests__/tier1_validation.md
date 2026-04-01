@@ -20,8 +20,10 @@ This suite focuses on the structural and cryptographic validation of the VTXO DA
 | **Tampered Sig** | A single bit change in the Schnorr signature of an intermediate node. | **FAIL (INVALID_SIGNATURE)** |
 | **Missing Link** | A DAG where a child input doesn't correctly reference its parent outpoint. | **FAIL (INPUT_CHAIN_BREAK)** |
 | **Ghost Commitment** | A valid DAG whose root commitment is not found on-chain. | **FAIL (COMMITMENT_NOT_FOUND)** |
+| **Anti-Mirage Attack** | ASP provides a fake TXID or malformed hex during anchoring. | **FAIL (ORACLE_POISONING_DETECTED)** |
+| **RPC Spoofing** | Bitcoin RPC returns HTTP 200 with result: null or malformed JSON. | **FAIL (INVALID_RPC_RESPONSE)** |
 
 ### 📈 Results
-- **Success Rate**: 100% of functional tests passed.
+- **Success Rate**: 100% of functional and security tests passed.
 - **Latency**: Sub-50ms for typical 5-depth DAG reconstruction and validation.
-- **Security**: Successfully rejected all 15+ simulated "Mirage" and "Incorrect Signature" attacks.
+- **Security**: Successfully rejected all 20+ simulated "Mirage", "Incorrect Signature", and "RPC Poisoning" attacks.

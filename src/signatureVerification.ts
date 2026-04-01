@@ -99,6 +99,16 @@ export function verifyNodeSignature(node: DAGNode): void {
   if (tapKeySig.length === 65) {
     signature = tapKeySig.slice(0, 64);
     sighashType = tapKeySig[64];
+    
+    // Strict Compliance: Reject any sighash that is not SIGHASH_ALL (0x01)
+    // if a byte is explicitly provided.
+    if (sighashType !== 0x01) {
+      throw new VtxoVerificationError(
+        `Transaction ${txid} uses an unsupported sighash flag: 0x${sighashType.toString(16)}`,
+        "UNSUPPORTED_SIGHASH",
+        { txid, sighashType }
+      );
+    }
   } else if (tapKeySig.length !== 64) {
     throw new VtxoVerificationError(
       `Transaction ${txid} has an invalid signature length (${tapKeySig.length})`,
@@ -106,6 +116,7 @@ export function verifyNodeSignature(node: DAGNode): void {
       { txid, length: tapKeySig.length }
     );
   }
+  // If length is 64, sighashType is implicitly SIGHASH_DEFAULT (0x00), which is allowed.
 
   // ── Step 3: Compute the Taproot Sighash (BIP 341) ──────────────────────
   //
