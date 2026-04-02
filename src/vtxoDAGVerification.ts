@@ -5,18 +5,18 @@
  *
  *  Implements client-side verification of VTXO chains for the Arkade SDK.
  *
- *  Given a VTXO (leaf) received from the ASP, this module:
+ *  Given a VTXO (Root) received from the ASP, this module:
  *    1. Fetches the full chain of virtual transactions from the IndexerService.
  *    2. Fetches the raw PSBT data for each virtual transaction.
  *    3. Reconstructs the complete DAG of presigned virtual transactions
- *       from the leaf back to the batch output (root).
+ *       from the Root (VTXO) back to the batch output (Anchoring Leaf).
  *    4. Validates that every transaction's inputs correctly reference
- *       the outputs of its parent in the DAG.
+ *       the outputs of its ancestor in the DAG.
  *    5. Validates checkpoint transactions (if present), verifying:
  *       – Their structural coherence with the sweep delay.
  *       – Their correct integration into the DAG.
- *    6. Validates that the root of the DAG is anchored to a valid
- *       batch output on the commitment transaction.
+ *    6. Validates that the Anchoring Leaf of the DAG is anchored onto a
+ *       valid batch output on the commitment transaction.
  *
  *  ZERO TRUST: Every piece of data from the ASP is treated as potentially
  *  malicious. The function fails loudly on any inconsistency.
@@ -131,14 +131,17 @@ export interface DAGNode {
   /** Raw base64 PSBT as received from the ASP. */
   rawPsbt: string;
 
-  /** Child nodes, keyed by the output index they spend. */
+  /** Child nodes (keyed by the output index they spend). */
   children: Map<number, DAGNode>;
 
-  /** Parent node (null for the root / commitment-anchored node). */
-  parent: DAGNode | null;
+  /** Ancestor node (closer to the user's VTXO Root). */
+  descendant: DAGNode | null;
 
-  /** The output index in the parent that this node spends. */
-  parentOutputIndex: number | null;
+  /** Ancestor node (null for the VTXO Root itself). */
+  ancestor: DAGNode | null;
+
+  /** The output index in the ancestor that this node spends. */
+  ancestorOutputIndex: number | null;
 }
 
 /** Validation result for the DAG. */
@@ -146,11 +149,11 @@ export interface DAGValidationResult {
   /** Whether all validations passed. */
   valid: boolean;
 
-  /** The reconstructed DAG, from root (batch output side) to leaf. */
-  root: DAGNode;
+  /** The reconstructed VTXO Root (the starting point). */
+  vtxoRoot: DAGNode;
 
-  /** The leaf node (the user's VTXO). */
-  leaf: DAGNode;
+  /** The anchoring leaf (the commitment-anchored ancestor). */
+  anchoringLeaf: DAGNode;
 
   /** The commitment tx that anchors the DAG on-chain. */
   commitmentTxid: string;
@@ -199,7 +202,7 @@ const Errors = {
 
   NO_COMMITMENT: () =>
     new VtxoVerificationError(
-      "No commitment transaction found at the root of the chain",
+      "No commitment transaction found at the anchoring leaf of the chain",
       "NO_COMMITMENT"
     ),
 
@@ -252,7 +255,7 @@ const Errors = {
 
   ORPHAN_TX: (txid: string) =>
     new VtxoVerificationError(
-      `Transaction ${txid} is orphaned — not reachable from the commitment root`,
+      `Transaction ${txid} is orphaned — not reachable from the VTXO root`,
       "ORPHAN_TX",
       { txid }
     ),
@@ -269,19 +272,19 @@ export const BATCH_OUTPUT_VTXO_INDEX = 0;
  * This is the Tier 1 core deliverable of the assignment:
  *   - Fetches the VTXO chain from the Indexer.
  *   - Fetches all virtual transaction PSBTs from the Indexer.
- *   - Reconstructs the DAG from leaf → root.
- *   - Validates input→output chaining at every level.
+ *   - Reconstructs the DAG from Root (VTXO) → Leaf (Anchor).
+ *   - Validates input→output ancestor chaining at every level.
  *   - Validates checkpoint transactions for sweep-delay coherence.
- *   - Validates that the root is anchored to the commitment tx.
+ *   - Validates that the Anchoring Leaf is anchored to the commitment tx.
  *
- * @param vtxoOutpoint  The leaf VTXO outpoint to verify.
- * @param indexer       An IndexerProvider implementation (e.g. RestIndexerProvider).
- * @param onchain       An OnchainProvider implementation (e.g. EsploraProvider).
+ * @param vtxoRootOutpoint  The user's starting VTXO Root outpoint to verify.
+ * @param indexer           An IndexerProvider implementation (e.g. RestIndexerProvider).
+ * @param onchain           An OnchainProvider implementation (e.g. EsploraProvider).
  * @throws VtxoVerificationError on any structural inconsistency.
  * @returns A DAGValidationResult with the full reconstructed + validated DAG.
  */
 export async function reconstructAndValidateVtxoDAG(
-  vtxoOutpoint: Outpoint,
+  vtxoRootOutpoint: Outpoint,
   indexer: IndexerProvider,
   onchain: OnchainProvider,
   witnessPreimages?: Map<string, Uint8Array>
@@ -290,15 +293,15 @@ export async function reconstructAndValidateVtxoDAG(
 
   // ── Step 1: Privacy-Preserving Fetching ──────────────────────────────────
   diagnostics.push(`[1/6] Privacy Mode: Fetching all VTXO chains for batch`);
-  const commitmentTxid = vtxoOutpoint.txid.split(":")[0]; 
+  const commitmentTxid = vtxoRootOutpoint.txid.split(":")[0]; 
   const allChains = await indexer.getBatchVtxos(commitmentTxid);
 
   const vtxoChain = allChains.find(vc => 
-    vc.chain.some(link => link.txid === vtxoOutpoint.txid)
+    vc.chain.some(link => link.txid === vtxoRootOutpoint.txid)
   );
 
   if (!vtxoChain || vtxoChain.chain.length === 0) {
-    throw Errors.EMPTY_CHAIN(vtxoOutpoint);
+    throw Errors.EMPTY_CHAIN(vtxoRootOutpoint);
   }
 
   const chain = vtxoChain.chain;
@@ -348,14 +351,15 @@ export async function reconstructAndValidateVtxoDAG(
   const chainLookup = new Map<string, ChainTx>();
   for (const link of chain) chainLookup.set(link.txid, link);
 
-  let rootNode: DAGNode | null = null;
+  let anchoringLeaf: DAGNode | null = null;
   const allNodes = new Map<string, DAGNode>();
 
   // 4a. Create all nodes
   for (const [txid, { tx, rawPsbt, chainTx }] of txMap) {
     allNodes.set(txid, {
       txid, tx, chainTx, rawPsbt,
-      children: new Map(), parent: null, parentOutputIndex: null,
+      children: new Map(), ancestor: null, ancestorOutputIndex: null,
+      descendant: null // Reversing terminology: VTXO is Root
     });
   }
 
@@ -376,55 +380,52 @@ export async function reconstructAndValidateVtxoDAG(
     }
 
     const input = node.tx.getInput(0);
-    const parentTxid = hex.encode(input.txid!);
-    const parentOutputIndex = input.index ?? 0;
+    const ancestorTxid = hex.encode(input.txid!);
+    const ancestorOutputIndex = input.index ?? 0;
 
-    if (parentTxid === actualCommitmentTxid) {
-      node.parent = null;
-      node.parentOutputIndex = parentOutputIndex;
-      rootNode = node;
+    if (ancestorTxid === actualCommitmentTxid) {
+      node.ancestor = null;
+      node.ancestorOutputIndex = ancestorOutputIndex;
+      anchoringLeaf = node;
     } else {
-      const parentNode = allNodes.get(parentTxid);
-      if (!parentNode) throw Errors.INPUT_CHAIN_BREAK(node.txid, parentTxid, "(not in DAG)");
-      node.parent = parentNode;
-      node.parentOutputIndex = parentOutputIndex;
-      parentNode.children.set(parentOutputIndex, node);
+      const ancestorNode = allNodes.get(ancestorTxid);
+      if (!ancestorNode) throw Errors.INPUT_CHAIN_BREAK(node.txid, ancestorTxid, "(not in DAG)");
+      node.ancestor = ancestorNode;
+      node.ancestorOutputIndex = ancestorOutputIndex;
+      ancestorNode.children.set(ancestorOutputIndex, node);
     }
   }
 
-  if (!rootNode) throw Errors.NO_COMMITMENT();
+  if (!anchoringLeaf) throw Errors.NO_COMMITMENT();
 
   const reachable = new Set<string>();
-  collectReachable(rootNode, reachable);
+  collectReachable(anchoringLeaf, reachable);
   for (const txid of allNodes.keys()) {
     if (!reachable.has(txid)) throw Errors.ORPHAN_TX(txid);
   }
 
-  // Find leaf node
-  let leafNode: DAGNode | null = allNodes.get(vtxoOutpoint.txid) || null;
-  if (!leafNode) {
-     for (const node of allNodes.values()) {
-       if (node.children.size === 0) { leafNode = node; break; }
-     }
+  // VTXO represents the Root of the verification tree
+  const vtxoRoot: DAGNode | null = allNodes.get(vtxoRootOutpoint.txid) || null;
+  if (!vtxoRoot) {
+     throw new VtxoVerificationError(`VTXO Root ${vtxoRootOutpoint.txid} not found in the chain`, "ROOT_NOT_FOUND");
   }
 
-  // ── Step 5: Commitment Detail & Status ───────────────────────────────────
-  diagnostics.push(`[5/9] Fetching on-chain commitment status`);
+  diagnostics.push(`[5/9] Fetching on-chain anchoring status`);
   const commitmentRaw = await onchain.getRawTransaction(actualCommitmentTxid);
   const commitmentTx = Transaction.fromRaw(hex.decode(commitmentRaw), { allowUnknownOutputs: true });
-  const batchOutput = commitmentTx.getOutput(rootNode.parentOutputIndex ?? BATCH_OUTPUT_VTXO_INDEX);
+  const batchOutput = commitmentTx.getOutput(anchoringLeaf.ancestorOutputIndex ?? BATCH_OUTPUT_VTXO_INDEX);
   
-  (rootNode as any).prevOutContext = { script: batchOutput.script, amount: batchOutput.amount };
+  (anchoringLeaf as any).prevOutContext = { script: batchOutput.script, amount: batchOutput.amount };
 
   const onchainStatus = await onchain.getTxStatus(actualCommitmentTxid);
   const blockchainInfo = onchain.getBlockchainInfo ? await onchain.getBlockchainInfo() : null;
 
   // ── Steps 6-9: Validations ───────────────────────────────────────────────
-  validateDAGChaining(rootNode, actualCommitmentTxid, diagnostics);
+  validateDAGChaining(anchoringLeaf, actualCommitmentTxid, diagnostics);
   const checkpointValidations = validateCheckpoints(allNodes, chainLookup, actualCommitmentTxid, diagnostics);
 
   for (const node of allNodes.values()) verifyNodeTaproot(node);
-  verifyDAGSignatures(rootNode);
+  verifyDAGSignatures(anchoringLeaf);
 
   if (blockchainInfo) {
     const chainState = {
@@ -432,17 +433,17 @@ export async function reconstructAndValidateVtxoDAG(
       currentTime: blockchainInfo.medianTime,
       commitmentHeight: onchainStatus.confirmed ? onchainStatus.blockHeight : undefined
     };
-    verifyDAGTimelocks(rootNode, chainState);
+    verifyDAGTimelocks(anchoringLeaf, chainState);
   }
 
-  verifyDAGHashPreimages(rootNode, witnessPreimages);
+  verifyDAGHashPreimages(anchoringLeaf, witnessPreimages);
 
   return {
     valid: true,
-    root: rootNode,
-    leaf: leafNode!,
+    vtxoRoot: vtxoRoot,
+    anchoringLeaf: anchoringLeaf,
     commitmentTxid: actualCommitmentTxid,
-    batchOutputIndex: rootNode.parentOutputIndex ?? BATCH_OUTPUT_VTXO_INDEX,
+    batchOutputIndex: anchoringLeaf.ancestorOutputIndex ?? BATCH_OUTPUT_VTXO_INDEX,
     checkpointValidations,
     diagnostics,
   };
@@ -486,7 +487,7 @@ function collectReachable(node: DAGNode, reachable: Set<string>): void {
   }
 }
 
-// ─── Internal: Find the deepest leaf in the DAG ─────────────────────────────
+// ─── Internal: Find the deepest anchoring leaf in the DAG ──────────────────
 
 function findLeafInDAG(node: DAGNode): DAGNode {
   const stack: DAGNode[] = [node];
@@ -519,8 +520,8 @@ function validateDAGChaining(
   while (stack.length > 0) {
     const node = stack.pop()!;
 
-    // ── 1. Validate root node's anchor to the commitment tx ─────────────
-    if (node.parent === null) {
+    // 1. Validate anchoring leaf's anchor to the commitment tx ─────────────
+    if (node.ancestor === null) {
       const input = node.tx.getInput(0);
       if (!input.txid) {
         throw Errors.INPUT_CHAIN_BREAK(node.txid, commitmentTxid, "(no input)");
@@ -532,33 +533,33 @@ function validateDAGChaining(
       }
 
       diagnostics.push(
-        `  ✓ Root ${node.txid} correctly anchored to commitment ${commitmentTxid} at output[${input.index ?? 0}]`
+        `  ✓ Anchoring Leaf ${node.txid} correctly anchored to commitment ${commitmentTxid} at output[${input.index ?? 0}]`
       );
 
-      // Verify root amount against commitment
-      const rootPrevOut = (node as any).prevOutContext;
-      if (rootPrevOut) {
-        let rootOutputsSum = 0n;
+      // Verify anchoring leaf amount against commitment
+      const anchorPrevOut = (node as any).prevOutContext;
+      if (anchorPrevOut) {
+        let anchorOutputsSum = 0n;
         for (let i = 0; i < node.tx.outputsLength; i++) {
           const out = node.tx.getOutput(i);
-          if (out?.amount) rootOutputsSum += out.amount;
+          if (out?.amount) anchorOutputsSum += out.amount;
         }
         
-        if (rootOutputsSum !== rootPrevOut.amount) {
+        if (anchorOutputsSum !== anchorPrevOut.amount) {
           throw Errors.AMOUNT_MISMATCH(
             commitmentTxid,
             input.index ?? 0,
-            rootPrevOut.amount,
-            rootOutputsSum
+            anchorPrevOut.amount,
+            anchorOutputsSum
           );
         }
-        diagnostics.push(`  ✓ Root amount ${rootOutputsSum} matches commitment batch output (conserved)`);
+        diagnostics.push(`  ✓ Anchoring Leaf amount ${anchorOutputsSum} matches commitment batch output (conserved)`);
       }
     }
 
-    // ── 2. Validate each child ───────────────────────────────────────────
+    // 2. Validate each child (traveling from Anchor towards VTXO Root) ─────
     for (const [outputIndex, child] of node.children) {
-      // (a) Verify child's input references the parent's output
+      // (a) Verify child's input references the ancestor's output
       const childInput = child.tx.getInput(0);
       if (!childInput.txid) {
         throw Errors.INPUT_CHAIN_BREAK(child.txid, node.txid, "(no input txid)");
@@ -579,13 +580,13 @@ function validateDAGChaining(
         );
       }
 
-      // (b) Verify amounts: sum(child outputs) == parent output[index]
-      const parentOutput = node.tx.getOutput(outputIndex);
-      if (!parentOutput || parentOutput.amount === undefined) {
+      // (b) Verify amounts: sum(child outputs) == ancestor output[index]
+      const ancestorOutput = node.tx.getOutput(outputIndex);
+      if (!ancestorOutput || ancestorOutput.amount === undefined) {
         throw new VtxoVerificationError(
-          `Parent ${node.txid} has no output at index ${outputIndex}`,
+          `Ancestor ${node.txid} has no output at index ${outputIndex}`,
           "MISSING_OUTPUT",
-          { parentTxid: node.txid, outputIndex }
+          { ancestorTxid: node.txid, outputIndex }
         );
       }
 
@@ -597,17 +598,17 @@ function validateDAGChaining(
         }
       }
 
-      if (childOutputsSum !== parentOutput.amount) {
+      if (childOutputsSum !== ancestorOutput.amount) {
         throw Errors.AMOUNT_MISMATCH(
           node.txid,
           outputIndex,
-          parentOutput.amount,
+          ancestorOutput.amount,
           childOutputsSum
         );
       }
 
       diagnostics.push(
-        `  ✓ ${child.txid} → parent ${node.txid}[${outputIndex}]: ${parentOutput.amount} sats (chain OK)`
+        `  ✓ ${child.txid} → ancestor ${node.txid}[${outputIndex}]: ${ancestorOutput.amount} sats (chain OK)`
       );
 
       // (c) Add child to stack for iterative processing
@@ -650,9 +651,9 @@ function validateCheckpoints(
     let expiryCoherent = true;
     let parentChainValid = true;
 
-    // ── 1. Verify checkpoint has parents in the chain ─────────────────────
+    // 1. Verify checkpoint has ancestors in the chain ─────────────────────
     if (node.chainTx.spends.length === 0) {
-      notes.push("WARNING: Checkpoint has no parent references in chain data");
+      notes.push("WARNING: Checkpoint has no ancestor references in chain data");
       parentChainValid = false;
     }
 
@@ -662,42 +663,42 @@ function validateCheckpoints(
       notes.push("ERROR: Checkpoint has no input txid");
       parentChainValid = false;
     } else {
-      const parentTxid = hex.encode(input.txid);
-      const parentInChain = chainLookup.get(parentTxid);
+      const ancestorTxid = hex.encode(input.txid);
+      const ancestorInChain = chainLookup.get(ancestorTxid);
 
-      if (!parentInChain) {
+      if (!ancestorInChain) {
         notes.push(
-          `WARNING: Checkpoint parent ${parentTxid} not found in chain metadata`
+          `WARNING: Checkpoint ancestor ${ancestorTxid} not found in chain metadata`
         );
       } else {
-        notes.push(`Parent in chain: ${parentTxid} (type: ${parentInChain.type})`);
+        notes.push(`Ancestor in chain: ${ancestorTxid} (type: ${ancestorInChain.type})`);
       }
     }
 
-    // ── 2. Validate expiry coherence ─────────────────────────────────────
+    // 2. Validate expiry coherence ─────────────────────────────────────
     //
     // The checkpoint's expiresAt must be:
-    //   - ≥ parent's expiresAt (cannot expire before what it depends on)
+    //   - ≥ ancestor's expiresAt (cannot expire before what it depends on)
     //   - ≤ batch root expiresAt (cannot outlive the batch)
     //
     const checkpointExpiry = parseExpiry(node.chainTx.expiresAt);
 
-    if (node.parent) {
-      const parentExpiry = parseExpiry(node.parent.chainTx.expiresAt);
+    if (node.ancestor) {
+      const ancestorExpiry = parseExpiry(node.ancestor.chainTx.expiresAt);
 
-      if (checkpointExpiry > 0 && parentExpiry > 0) {
-        if (checkpointExpiry < parentExpiry) {
+      if (checkpointExpiry > 0 && ancestorExpiry > 0) {
+        if (checkpointExpiry < ancestorExpiry) {
           expiryCoherent = false;
           notes.push(
-            `FAIL: Checkpoint expires at ${checkpointExpiry} but parent expires at ${parentExpiry} (checkpoint must not expire before parent)`
+            `FAIL: Checkpoint expires at ${checkpointExpiry} but ancestor expires at ${ancestorExpiry} (checkpoint must not expire before ancestor)`
           );
           throw Errors.CHECKPOINT_EXPIRY_INCOHERENT(
             txid,
-            `expires at ${checkpointExpiry} but parent at ${parentExpiry}`
+            `expires at ${checkpointExpiry} but ancestor at ${ancestorExpiry}`
           );
         } else {
           notes.push(
-            `Expiry OK: checkpoint=${checkpointExpiry}, parent=${parentExpiry}`
+            `Expiry OK: checkpoint=${checkpointExpiry}, ancestor=${ancestorExpiry}`
           );
         }
       } else {

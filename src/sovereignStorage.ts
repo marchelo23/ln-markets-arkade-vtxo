@@ -7,7 +7,7 @@
 
 import { hex } from "@scure/base";
 import type { DAGNode, Outpoint, StorageProvider, IndexerProvider, OnchainProvider } from "./vtxoDAGVerification.js";
-import { verifyVtxoComplete } from "./vtxoDAGVerification.js";
+import { reconstructAndValidateVtxoDAG } from "./vtxoDAGVerification.js";
 import { StorageCrypto } from "./cryptoUtils.js";
 import { MockWalletAuthenticator } from "./authenticator.js";
 
@@ -28,13 +28,13 @@ function getActiveKey(): Buffer {
 }
 
 export interface SovereignExitData {
-  /** The specific VTXO leaf being protected. */
-  leafTxid: string;
+  /** The specific VTXO root (the user's outpoint) being protected. */
+  vtxoRootTxid: string;
   /** The Anchor commitment transaction ID. */
   commitmentTxid: string;
   /** The batch output index on the commitment transaction. */
   batchOutputIndex: number;
-  /** Ordered array of hex-encoded transactions to broadcast (Root -> ... -> Leaf). */
+  /** Ordered array of hex-encoded transactions to broadcast (Anchor -> ... -> VTXO Root). */
   broadcastSequence: string[];
   /** Timestamp when this data was secured. */
   securedAt: number;
@@ -43,25 +43,25 @@ export interface SovereignExitData {
 // ─── Extraction & Orchestration ─────────────────────────────────────────────
 
 /**
- * Traverses a validated DAG from the Root to find the specific path
- * descending to the target Leaf, returning the ordered hex transactions.
- * Order: [RootTx (spends commitment), ..., IntermediateTx, ... , LeafTx]
+ * Traverses a validated DAG from the Anchoring Leaf to find the specific path
+ * descending to the target VTXO Root, returning the ordered hex transactions.
+ * Order: [AnchorTx (spends commitment), ..., IntermediateTx, ... , VTXO Root Tx]
  * 
- * This top-down sequence is exactly the order required for on-chain
+ * This sequence is exactly the order required for on-chain
  * transaction broadcasting to satisfy topological consensus checks.
  *
- * @param rootNode The root of the DAG (spending the commitment).
- * @param leafTxid The ultimate VTXO target txid.
+ * @param anchoringLeaf The leaf of the DAG (directly spending the commitment).
+ * @param vtxoRootTxid The ultimate VTXO target txid.
  * @returns Array of hex-encoded, broadcast-ready transactions.
  */
-export function extractExitSequence(rootNode: DAGNode, leafTxid: string): string[] {
+export function extractExitSequence(anchoringLeaf: DAGNode, vtxoRootTxid: string): string[] {
   const sequence: string[] = [];
 
   function dfs(node: DAGNode, currentPath: string[]): boolean {
     const rawTx = hex.encode(node.tx.toBytes());
     currentPath.push(rawTx);
 
-    if (node.txid === leafTxid) {
+    if (node.txid === vtxoRootTxid) {
       sequence.push(...currentPath);
       return true;
     }
@@ -76,9 +76,9 @@ export function extractExitSequence(rootNode: DAGNode, leafTxid: string): string
     return false;
   }
 
-  const found = dfs(rootNode, []);
+  const found = dfs(anchoringLeaf, []);
   if (!found) {
-    throw new Error(`Critical: Leaf ${leafTxid} not reachable from DAG root ${rootNode.txid}`);
+    throw new Error(`Critical: VTXO Root ${vtxoRootTxid} not reachable from Anchoring Leaf ${anchoringLeaf.txid}`);
   }
 
   return sequence;
@@ -86,8 +86,8 @@ export function extractExitSequence(rootNode: DAGNode, leafTxid: string): string
 
 // ─── Storage Persistence ───────────────────────────────────────────────────
 
-function getStorageKey(leafTxid: string): string {
-  return `arkade_exit_data_${leafTxid}`;
+function getStorageKey(vtxoRootTxid: string): string {
+  return `arkade_exit_data_${vtxoRootTxid}`;
 }
 
 /**
@@ -97,13 +97,13 @@ function getStorageKey(leafTxid: string): string {
  * @param storage The sovereign storage adapter instance.
  */
 export async function persistVtxoForExit(
-  result: Awaited<ReturnType<typeof verifyVtxoComplete>>,
+  result: Awaited<ReturnType<typeof reconstructAndValidateVtxoDAG>>,
   storage: StorageProvider
 ): Promise<void> {
-  const broadcastSequence = extractExitSequence(result.root, result.leaf.txid);
+  const broadcastSequence = extractExitSequence(result.anchoringLeaf, result.vtxoRoot.txid);
 
   const exitData: SovereignExitData = {
-    leafTxid: result.leaf.txid,
+    vtxoRootTxid: result.vtxoRoot.txid,
     commitmentTxid: result.commitmentTxid,
     batchOutputIndex: result.batchOutputIndex,
     broadcastSequence,
@@ -113,23 +113,23 @@ export async function persistVtxoForExit(
   const payload = JSON.stringify(exitData);
   const encrypted = StorageCrypto.encrypt(payload, getActiveKey());
   
-  await storage.setItem(getStorageKey(exitData.leafTxid), encrypted.toString("base64"));
+  await storage.setItem(getStorageKey(exitData.vtxoRootTxid), encrypted.toString("base64"));
 }
 
 /**
  * Recovers the strict top-down broadcast sequence for unilateral exit execution.
  * Fails loudly if the data was not autonomously secured prior to network drop.
  * 
- * @param leafTxid 
+ * @param vtxoRootTxid 
  * @param storage 
  */
 export async function getBroadcastSequence(
-  leafTxid: string,
+  vtxoRootTxid: string,
   storage: StorageProvider
 ): Promise<string[]> {
-  const encryptedB64 = await storage.getItem(getStorageKey(leafTxid));
+  const encryptedB64 = await storage.getItem(getStorageKey(vtxoRootTxid));
   if (!encryptedB64) {
-    throw new Error(`Sovereign Exit Failed: No local data secured for VTXO ${leafTxid}. ASP connection required!`);
+    throw new Error(`Sovereign Exit Failed: No local data secured for VTXO Root ${vtxoRootTxid}. ASP connection required!`);
   }
 
   const encrypted = Buffer.from(encryptedB64, "base64");
@@ -155,7 +155,7 @@ export async function onReceiveVtxo(
 ): Promise<{ success: boolean; diagnostics: string[]; error?: string }> {
   try {
     // 1. Run rigorous multi-layered verification (DAG, Sigs, Taproot, Timelocks, HTLCs)
-    const verificationResult = await verifyVtxoComplete(outpoint, indexer, onchain);
+    const verificationResult = await reconstructAndValidateVtxoDAG(outpoint, indexer, onchain);
 
     // 2. Persist Sovereign Exit Data locally, cutting ASP ties for exiting
     await persistVtxoForExit(verificationResult, storage);
@@ -183,14 +183,14 @@ export async function onReceiveVtxo(
  * This effectively executes the Unilateral Sovereign Exit.
  */
 export async function executeSovereignExit(
-  leafTxid: string,
+  vtxoRootTxid: string,
   storage: StorageProvider,
   onchain: OnchainProvider
 ): Promise<{ success: boolean; broadcastedTxids: string[]; error?: string }> {
   const broadcastedTxids: string[] = [];
 
   try {
-    const broadcastSequence = await getBroadcastSequence(leafTxid, storage);
+    const broadcastSequence = await getBroadcastSequence(vtxoRootTxid, storage);
 
     // Sequence is correctly ordered top-down relative to the DAG structure
     for (const txHex of broadcastSequence) {

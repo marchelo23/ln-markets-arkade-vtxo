@@ -172,32 +172,32 @@ function verifyNodeScriptPathSignature(node: DAGNode): void {
 
 /**
  * Collects the previous output information needed for sighash calculation.
- * For virtual transactions in the DAG, the parent's outputs are used.
+ * For virtual transactions in the DAG, the ancestor's outputs are used.
  */
 function getPrevOutsForNode(node: DAGNode): { script: Uint8Array; amount: bigint }[] {
-  // Every transaction in the VTXO DAG has exactly 1 input spending from its parent.
+  // Every transaction in the VTXO DAG has exactly 1 input spending from its ancestor.
   
-  if (!node.parent) {
-     // This is the root node spending from the commitment transaction.
+  if (!node.ancestor) {
+     // This is the anchoring node spending from the commitment transaction.
      // The context was injected by reconstructAndValidateVtxoDAG.
      const context = (node as any).prevOutContext;
      if (!context) {
-       throw new Error("Commitment output context missing for root node signature verification");
+       throw new Error("Commitment output context missing for anchoring node signature verification");
      }
      return [context];
   }
 
-  // Normal tree/ark tx: spending from the parent DAGNode
-  const parentNode = node.parent;
-  const parentOutput = parentNode.tx.getOutput(node.parentOutputIndex ?? 0);
+  // Normal tree/ark tx: spending from the ancestor DAGNode
+  const ancestorNode = node.ancestor;
+  const ancestorOutput = ancestorNode.tx.getOutput(node.ancestorOutputIndex ?? 0);
   
-  if (!parentOutput.script || parentOutput.amount === undefined) {
-    throw new Error("Parent output info missing for sighash calculation");
+  if (!ancestorOutput.script || ancestorOutput.amount === undefined) {
+    throw new Error("Ancestor output info missing for sighash calculation");
   }
 
   return [{
-    script: parentOutput.script,
-    amount: parentOutput.amount
+    script: ancestorOutput.script,
+    amount: ancestorOutput.amount
   }];
 }
 

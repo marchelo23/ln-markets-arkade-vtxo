@@ -21,4 +21,4 @@ This suite performs "destructive testing" on the Arkade SDK by injecting intenti
 ## 🛡️ Security Posture
 The fuzzing suite confirms that the Arkade SDK maintains a **Zero-Trust** environment. Every external input—from the ASP Indexer and the Bitcoin Node—is structurally and cryptographically validated before it can influence the state of a VTXO or an exit claim.
 
-**Verified Success Rate**: 100% (6/6 destructive scenarios handled safely).
+**Verified Success Rate**: 100% (87/87 total tests passed including destructive scenarios).

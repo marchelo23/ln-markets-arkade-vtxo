@@ -16,7 +16,7 @@ import { taprootTweakPubkey, taprootTweakPrivKey } from "@scure/btc-signer/utils
 import { p2tr } from "@scure/btc-signer/payment.js";
 import { Script, OP } from "@scure/btc-signer/script.js";
 import {
-  verifyVtxoComplete,
+  reconstructAndValidateVtxoDAG,
   ChainTxType,
   type Outpoint,
   type ChainTx,
@@ -206,7 +206,11 @@ describe("VTXO DAG Verification", () => {
       ];
       indexer.virtualTxs.set(vtxoTx.txid, base64.encode(vtxoTx.tx.toPSBT()));
 
-      const result = await verifyVtxoComplete({ txid: vtxoTx.txid, vout: 0 }, indexer, onchain);
+      const result = await reconstructAndValidateVtxoDAG(
+        { txid: vtxoTx.txid, vout: 0 },
+        indexer,
+        onchain
+      );
       expect(result.valid).toBe(true);
     });
 
@@ -230,7 +234,7 @@ describe("VTXO DAG Verification", () => {
 
       // Verify that it fails due to the root anchor mismatch or signature tamper.
       // Note: In Step 8 order, Taproot Tweak is verified before Signatures.
-      await expect(verifyVtxoComplete({ txid: vtxoTx.txid, vout: 0 }, indexer, onchain))
+      await expect(reconstructAndValidateVtxoDAG({ txid: vtxoTx.txid, vout: 0 }, indexer, onchain))
         .rejects.toThrow(/INVALID_TAPROOT_TWEAK|INVALID_SIGNATURE/);
     });
   });
@@ -265,7 +269,11 @@ describe("VTXO DAG Verification", () => {
       ];
       indexer.virtualTxs.set(vtxoTx.txid, base64.encode(vtxoTx.tx.toPSBT()));
 
-      const result = await verifyVtxoComplete({ txid: vtxoTx.txid, vout: 0 }, indexer, onchain);
+      const result = await reconstructAndValidateVtxoDAG(
+        { txid: vtxoTx.txid, vout: 0 },
+        indexer,
+        onchain
+      );
       expect(result.valid).toBe(true);
     });
 
@@ -296,7 +304,7 @@ describe("VTXO DAG Verification", () => {
       ];
       indexer.virtualTxs.set(vtxoTx.txid, base64.encode(vtxoTx.tx.toPSBT()));
 
-      await expect(verifyVtxoComplete({ txid: vtxoTx.txid, vout: 0 }, indexer, onchain))
+      await expect(reconstructAndValidateVtxoDAG({ txid: vtxoTx.txid, vout: 0 }, indexer, onchain))
         .rejects.toThrow("INVALID_ARK_SCRIPT");
     });
   });
@@ -341,7 +349,11 @@ describe("VTXO DAG Verification", () => {
       ];
       indexer.virtualTxs.set(vtxoTx.txid, base64.encode(vtxoTx.tx.toPSBT()));
 
-      const result = await verifyVtxoComplete({ txid: vtxoTx.txid, vout: 0 }, indexer, onchain);
+      const result = await reconstructAndValidateVtxoDAG(
+        { txid: vtxoTx.txid, vout: 0 },
+        indexer,
+        onchain
+      );
       expect(result.valid).toBe(true);
     });
 
@@ -604,11 +616,10 @@ describe("VTXO DAG Verification", () => {
 
       // ── Run the FULL verification pipeline ─────────────────────────
       // We MUST pass preimages now as they are mandatory for security
-      const result = await verifyVtxoComplete(
+      const result = await reconstructAndValidateVtxoDAG(
         { txid: htlcVtxo.txid, vout: 0 },
         indexer,
         onchain,
-        1,
         preimages
       );
 
@@ -624,7 +635,7 @@ describe("VTXO DAG Verification", () => {
 
       // The node from the pipeline result should verify cleanly
       expect(() => {
-        verifyNodeHashPreimages(result.root, witnessPreimages);
+        verifyNodeHashPreimages(result.anchoringLeaf, witnessPreimages);
       }).not.toThrow();
 
       // ── Verify that a WRONG preimage is rejected ───────────────────
@@ -632,7 +643,7 @@ describe("VTXO DAG Verification", () => {
       badPreimages.set(hex.encode(preimageHashRipemd), new Uint8Array(32).fill(0xff));
 
       expect(() => {
-        verifyNodeHashPreimages(result.root, badPreimages);
+        verifyNodeHashPreimages(result.anchoringLeaf, badPreimages);
       }).toThrow("INVALID_HASH_PREIMAGE");
     });
   });
