@@ -89,7 +89,17 @@ Runtime dependencies are limited to the standard Arkade SDK stack: `@scure/btc-s
 - **Local Storage**: `persistVtxoForExit()` encrypts and stores exit data via the SDK's storage adapter. `onReceiveVtxo()` automates this on VTXO receipt.
 - **Exit Execution**: `executeSovereignExit()` broadcasts the full transaction sequence using only local data and a Bitcoin node — no ASP contact required.
 
-### 3.4 Limitations
+### 3.4 Tier 4: Sentinel Protocol Frontend (Verification UI) ✅
+- **Purpose**: A tactical React-based interface ("Sentinel Protocol") designed to visually demonstrate the Arkade SDK's VTXO verification pipeline.
+- **Branding**: Integrates the "CVE (Chelo Verification Engine)" branding, serving as a robust, high-fidelity proof of the SDK's security and logic.
+- **Core Views**:
+  - **Command Center**: Overall status dashboard showing pipeline health, verification stats, and anchoring status.
+  - **DAG Explorer**: Structural analysis and visualization of the reconstructed VTXO dependency graph.
+  - **Signature Audit**: Signature Verification Audit ensuring cryptographic integrity of the paths.
+  - **Sovereign Exit**: Visualizes the exit sequence and cryptographic guarantees for unilateral extraction.
+  - **Live Terminal**: Real-time diagnostic terminal representing the verification pipeline log output.
+
+### 3.5 Limitations
 - **MuSig2 Key Aggregation**: The SDK verifies that signatures are valid against tweaked public keys but does not independently verify the n-of-n MuSig2 key aggregation ceremony. This would require access to individual signer public keys, which are not exposed by the current IndexerService API.
 - **Regtest/Signet Scope**: Tested against regtest and signet structures. Mainnet deployment would benefit from BIP 157/158 (Neutrino) integration for trust-minimized on-chain verification.
 - **Integration Testing**: The integration test against a live arkd instance requires a running local environment. Without arkd, the test skips gracefully.
