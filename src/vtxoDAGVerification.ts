@@ -82,9 +82,13 @@ export interface IndexerProvider {
   /** Get all VTXO chains associated with a specific commitment batch (Privacy Mode). */
   getBatchVtxos(commitmentTxid: string): Promise<VtxoChain[]>;
 
+  /** Get the specific chain for a VTXO outpoint. */
+  getVtxoChain?(txid: string, vout: number): Promise<VtxoChain>;
+
   /** Fetch raw virtual transaction PSBTs (base64-encoded). */
   getVirtualTxs(txids: string[]): Promise<{ txs: string[] }>;
 }
+
 
 /**
  * Minimal interface for an on-chain explorer/node.
@@ -291,21 +295,43 @@ export async function reconstructAndValidateVtxoDAG(
 ): Promise<DAGValidationResult> {
   const diagnostics: string[] = [];
 
-  // ── Step 1: Privacy-Preserving Fetching ──────────────────────────────────
-  diagnostics.push(`[1/6] Privacy Mode: Fetching all VTXO chains for batch`);
-  const commitmentTxid = vtxoRootOutpoint.txid.split(":")[0]; 
-  const allChains = await indexer.getBatchVtxos(commitmentTxid);
+  // ── Step 1: Fetch the VTXO chain ────────────────────────────────────────
+  //
+  // Two modes of operation:
+  //   (a) Direct: Use getVtxoChain() to fetch the specific VTXO's chain.
+  //   (b) Privacy-preserving: Use getBatchVtxos() to fetch ALL chains in the
+  //       commitment batch, then filter locally. This prevents the ASP from
+  //       learning which specific VTXO the client is verifying.
+  //
+  diagnostics.push(`[1/6] Fetching VTXO chain for ${vtxoRootOutpoint.txid}:${vtxoRootOutpoint.vout}`);
 
-  const vtxoChain = allChains.find(vc => 
-    vc.chain.some(link => link.txid === vtxoRootOutpoint.txid)
-  );
+  let chain: ChainTx[];
 
-  if (!vtxoChain || vtxoChain.chain.length === 0) {
-    throw Errors.EMPTY_CHAIN(vtxoRootOutpoint);
+  if (indexer.getVtxoChain) {
+    // Direct mode: fetch the specific VTXO chain
+    const vtxoChain = await indexer.getVtxoChain(vtxoRootOutpoint.txid, vtxoRootOutpoint.vout);
+    if (!vtxoChain || vtxoChain.chain.length === 0) {
+      throw Errors.EMPTY_CHAIN(vtxoRootOutpoint);
+    }
+    chain = vtxoChain.chain;
+    diagnostics.push(`  → Direct mode: fetched chain with ${chain.length} links`);
+  } else {
+    // Privacy-preserving mode: fetch batch and filter locally
+    diagnostics.push(`  → Privacy mode: fetching all chains in batch`);
+    const allChains = await indexer.getBatchVtxos(vtxoRootOutpoint.txid);
+
+    const vtxoChain = allChains.find(vc =>
+      vc.chain.some(link => link.txid === vtxoRootOutpoint.txid)
+    );
+
+    if (!vtxoChain || vtxoChain.chain.length === 0) {
+      throw Errors.EMPTY_CHAIN(vtxoRootOutpoint);
+    }
+
+    chain = vtxoChain.chain;
+    diagnostics.push(`  → Identified local chain with ${chain.length} links (Privacy preserved)`);
   }
 
-  const chain = vtxoChain.chain;
-  diagnostics.push(`  → Identified local chain with ${chain.length} links (Privacy preserved)`);
 
   // ── Step 2: Separate commitment from virtual transactions ────────────────
   const commitmentLinks = chain.filter((c) => c.type === ChainTxType.COMMITMENT);

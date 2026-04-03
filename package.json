@@ -1,5 +1,5 @@
 {
-  "name": "ark",
+  "name": "arkade-vtxo-verification",
   "version": "1.0.0",
   "type": "module",
   "main": "dist/vtxoDAGVerification.js",
@@ -9,14 +9,17 @@
     "build": "tsc",
     "typecheck": "tsc --noEmit"
   },
-  "keywords": [],
-  "author": "",
+  "keywords": ["ark", "bitcoin", "vtxo", "verification", "taproot"],
+  "author": "Marcelo Adrián Guerra Najarro",
   "license": "ISC",
-  "description": "",
-  "devDependencies": {
+  "description": "Client-side VTXO verification for the Arkade SDK (Plan B Network Technical Assignment)",
+  "dependencies": {
     "@noble/curves": "2.0.1",
+    "@noble/hashes": "1.7.2",
     "@scure/base": "2.0.0",
-    "@scure/btc-signer": "2.0.1",
+    "@scure/btc-signer": "2.0.1"
+  },
+  "devDependencies": {
     "@types/node": "25.5.0",
     "typescript": "6.0.2",
     "undici": "7.24.7",
