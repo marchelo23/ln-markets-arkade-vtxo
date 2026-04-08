@@ -43,6 +43,10 @@ npx vitest run src/__tests__/blackboxSec.test.ts
 
 # Run the Scaling/Stress/DoS Audit (1,000 Node DAGs & Merkle Bombs)
 npx vitest run src/__tests__/stress_dos.test.ts
+
+# Run the Integration E2E Mock Node (Arkd + Bitcoin Core)
+node --experimental-strip-types src/scripts/mockNodes.ts &
+npx vitest run src/__tests__/arkd_integration.test.ts
 ```
 
 ### Configuration: Storage Adapter
@@ -64,6 +68,8 @@ await onReceiveVtxo(outpoint, indexer, onchain, myStorage);
 - **Zero-Trust**: No data from the ASP is trusted until verified.
 - **Privacy-Preserving**: Client fetches entire batches from the Indexer, hiding specific VTXO ownership from the ASP.
 - **Forensic Security (Encryption)**: Exit data is stored using AES-256-GCM. No private withdrawal metadata is at rest in plain text.
-- **Ouroboros Protection**: Iterative cycle detection prevents infinite loop attacks in DAG reconstruction.
+- **Ouroboros Protection (Cycle)**: Iterative cycle detection prevents infinite loop ASP attacks (`CYCLE_DETECTED`).
 - **Iterative Robustness**: All traversals are iterative, preventing `Stack Overflow` attacks on extremely deep transaction chains (1,000+ nodes).
 - **Atomic Consistency**: Checks relative maturity (CSV) against actual block heights to ensure satisfiability.
+- **Economic Inflation Prevention**: Automatically rejects nodes where output amounts exceed parent funding (`AMOUNT_MISMATCH`).
+- **Orphan Payload Mitigation**: Aggressively rejects corrupted sub-graphs disconnected from the commitment anchor to prevent compute exhaustion (`INPUT_CHAIN_BREAK`).

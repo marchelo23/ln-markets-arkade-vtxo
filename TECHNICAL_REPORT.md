@@ -111,16 +111,16 @@ Runtime dependencies are limited to the standard Arkade SDK stack: `@scure/btc-s
 | Suite | Tests | Description |
 |---|---|---|
 | vtxoDAGVerification | 13 | Core DAG + signatures + Boltz HTLC |
-| blackboxSec | 18 | Anti-Mirage, RPC validation, tamper detection |
+| blackboxSec | 21 | Anti-Mirage, RPC validation, tamper detection, economic inflation, cycles, and orphan payloads |
 | sovereignStorage | 17 | AES-256-GCM encryption, exit sequence, unilateral exit |
 | stress_dos | 16 | Deep chains, concurrency, fail-fast |
 | extreme_fuzzing | 6 | Garbage injection, sighash enforcement |
 | real_world_vtxo | 15 | Multi-depth chain, checkpoint verification |
 | stress | 15 | 500-depth iterative traversal, concurrency |
-| arkd_integration | 1 | E2E against local arkd (skips if unavailable) |
-| **Total** | **101** | |
+| arkd_integration | 1 | E2E against local arkd or built-in Node.js Mock Server |
+| **Total** | **104** | |
 
 
 ---
 
-**Status:** All unit tests pass. Integration test requires local arkd instance.
+**Status:** All 104 tests pass. Integration testing includes a fully functional native Node.js Mock Server to emulate Arkd Indexer and Bitcoin Core if live instances are unavailable.

@@ -154,4 +154,83 @@ describe("Black Box Security Audit: Malicious ASP Resilience", () => {
     await expect(reconstructAndValidateVtxoDAG({ txid: vtxoTx.txid, vout: 0 }, indexer, onchain))
       .rejects.toThrow(/SECURITY_VIOLATION/);
   });
+
+  // ─── Scenario 4: Economic Inflation & Structural Attacks ─────────────────
+  it("INFLATION: should reject when a child transaction inflates the output amount (creating money out of thin air)", async () => {
+    const commitmentTxid = fakeCommitmentTxid(800);
+    const commitmentRaw = createVirtualTx(fakeCommitmentTxid(801), 0, [
+      { amount: 50000n, script: makeP2TRScript(1) } // The true on-chain funding is only 50k
+    ]);
+    onchain.txs.set(commitmentTxid, hex.encode(commitmentRaw.tx.toBytes()));
+    onchain.confirmedTxids.add(commitmentTxid);
+
+    // Malicious ASP creates a VTXO of 100k out of a 50k parent output
+    const vtxoTx = createVirtualTx(commitmentTxid, 0, [{ amount: 100000n }], {
+      parentScript: makeP2TRScript(1),
+      tapInternalKey: schnorr.getPublicKey(TEST_PRIVKEYS[1])
+    });
+
+    indexer.chain = [
+      { txid: vtxoTx.txid, expiresAt: "2000000000", type: ChainTxType.ARK, spends: [commitmentTxid] },
+      { txid: commitmentTxid, expiresAt: "2000000000", type: ChainTxType.COMMITMENT, spends: [] }
+    ];
+    indexer.virtualTxs.set(vtxoTx.txid, base64.encode(vtxoTx.tx.toPSBT()));
+
+    await expect(reconstructAndValidateVtxoDAG({ txid: vtxoTx.txid, vout: 0 }, indexer, onchain))
+      .rejects.toThrow(/AMOUNT_MISMATCH/);
+  });
+
+  it("DOS / CYCLE: should violently reject a malicious DAG that contains an infinite loop to prevent SDK crash", async () => {
+    const fakeRoot = "vtxo_infinity_root";
+    const fakeChild = "vtxo_infinity_loop";
+
+    // Create a circular dependency
+    indexer.chain = [
+      { txid: fakeRoot, expiresAt: "2000000000", type: ChainTxType.TREE, spends: [fakeChild] },
+      { txid: fakeChild, expiresAt: "2000000000", type: ChainTxType.TREE, spends: [fakeRoot] }
+    ];
+
+    const tx1 = createVirtualTx(fakeChild, 0, [{ amount: 100n }]);
+    const tx2 = createVirtualTx(fakeRoot, 0, [{ amount: 100n }]);
+    // Overwrite their generated txids to match the loop
+    Object.defineProperty(tx1.tx, 'id', { value: fakeRoot });
+    Object.defineProperty(tx2.tx, 'id', { value: fakeChild });
+
+    indexer.virtualTxs.set(fakeRoot, base64.encode(tx1.tx.toPSBT()));
+    indexer.virtualTxs.set(fakeChild, base64.encode(tx2.tx.toPSBT()));
+
+    await expect(reconstructAndValidateVtxoDAG({ txid: fakeRoot, vout: 0 }, indexer, onchain))
+      .rejects.toThrow(/CYCLE_DETECTED|NO_COMMITMENT/);
+  });
+
+  it("ORPHAN / DISTRACTION: should reject a payload containing unreachable corrupted sub-graphs", async () => {
+    const commitmentTxid = fakeCommitmentTxid(900);
+    const commitmentRaw = createVirtualTx(fakeCommitmentTxid(901), 0, [
+      { amount: 50000n, script: makeP2TRScript(1) }
+    ]);
+    onchain.txs.set(commitmentTxid, hex.encode(commitmentRaw.tx.toBytes()));
+    onchain.confirmedTxids.add(commitmentTxid);
+
+    // Valid branch
+    const vtxoTx = createVirtualTx(commitmentTxid, 0, [{ amount: 50000n }], {
+      parentScript: makeP2TRScript(1),
+      tapInternalKey: schnorr.getPublicKey(TEST_PRIVKEYS[1])
+    });
+
+    // Orphan/distraction branch that has NO anchor to the commitment tx
+    const orphanTx = createVirtualTx("completely_fake_parent_tx", 0, [{ amount: 1000n }]);
+    
+    signVirtualTx(vtxoTx.tx, 0, TEST_PRIVKEYS[1], [{ script: makeP2TRScript(1), amount: 50000n }]);
+
+    indexer.chain = [
+      { txid: vtxoTx.txid, expiresAt: "2000000000", type: ChainTxType.ARK, spends: [commitmentTxid] },
+      { txid: orphanTx.txid, expiresAt: "2000000000", type: ChainTxType.TREE, spends: ["completely_fake_parent_tx"] },
+      { txid: commitmentTxid, expiresAt: "2000000000", type: ChainTxType.COMMITMENT, spends: [] }
+    ];
+    indexer.virtualTxs.set(vtxoTx.txid, base64.encode(vtxoTx.tx.toPSBT()));
+    indexer.virtualTxs.set(orphanTx.txid, base64.encode(orphanTx.tx.toPSBT()));
+
+    await expect(reconstructAndValidateVtxoDAG({ txid: vtxoTx.txid, vout: 0 }, indexer, onchain))
+      .rejects.toThrow(/ORPHAN_TX|INPUT_CHAIN_BREAK/);
+  });
 });
